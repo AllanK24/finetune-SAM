@@ -11,6 +11,7 @@ def parse_args():
     parser.add_argument('-mask_folder', type=str, default='./datasets/', help='the folder putting masks')
     parser.add_argument('-train_img_list', type=str, default='./datasets/train.csv')
     parser.add_argument('-val_img_list', type=str,default='./datasets/val.csv')
+    parser.add_argument('-test_img_list', type=str, default='./datasets/train.csv')
     parser.add_argument('-targets', type=str,default='combine_all')
 
     parser.add_argument('-finetune_type', type=str, default='adapter', help='normalization type, pick among vanilla,adapter,lora')

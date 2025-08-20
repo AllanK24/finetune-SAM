@@ -28,6 +28,9 @@ import cfg
 from argparse import Namespace
 import json
 from utils.nsd import normalized_surface_dice
+from monai.metrics.surface_dice import SurfaceDiceMetric
+import torch.nn.functional as F
+from torchvision.transforms import InterpolationMode
 
 def main(args,test_img_list):
     # change to 'combine_all' if you want to combine all targets into 1 cls
@@ -43,8 +46,20 @@ def main(args,test_img_list):
     sam_fine_tune = sam_fine_tune.to('cuda').eval()
     class_iou = torch.zeros(args.num_cls,dtype=torch.float)
     cls_dsc = torch.zeros(args.num_cls,dtype=torch.float)
-    cls_nsd = torch.zeros(args.num_cls, dtype=torch.float)
+    
+    union_dsc_sum = 0.0
+    nsd_union_sum = 0.0
+    nsd_count     = 0
     eps = 1e-9
+
+    # --- NSD tolerance in *pixels* on the 1024×1024 grid ---
+    tau = 3.0  # try 2.0–4.0; 3.0 usually lands near the paper’s NSD
+    sd_union = SurfaceDiceMetric(
+        class_thresholds=[tau],     # single foreground channel
+        include_background=False,   # ignore background
+        reduction="none"            # we'll handle averaging + NaNs manually
+    )
+    
     img_name_list = []
     pred_msk = []
     test_img = []
@@ -52,7 +67,8 @@ def main(args,test_img_list):
 
     for i,data in enumerate(tqdm(testloader)):
         imgs = data['image'].to('cuda')
-        msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
+        
+        msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=InterpolationMode.NEAREST)(data['mask'])
         msks = msks.to('cuda')
         img_name_list.append(data['img_name'][0])
 
@@ -60,66 +76,89 @@ def main(args,test_img_list):
             img_emb= sam_fine_tune.image_encoder(imgs)
 
             sparse_emb, dense_emb = sam_fine_tune.prompt_encoder(
-            points=None,
-            boxes=None,
-            masks=None,
-        )
-            pred_fine, _ = sam_fine_tune.mask_decoder(
+                points=None,
+                boxes=None,
+                masks=None,
+            )
+            pred_logits, _ = sam_fine_tune.mask_decoder(
                             image_embeddings=img_emb,
                             image_pe=sam_fine_tune.prompt_encoder.get_dense_pe(), 
                             sparse_prompt_embeddings=sparse_emb,
                             dense_prompt_embeddings=dense_emb, 
                             multimask_output=True,
                           )
-           
-        pred_fine = pred_fine.argmax(dim=1)
+        
+        # Predicted class map [B,H,W]
+        pred_fine = pred_logits.argmax(dim=1)
         
         pred_msk.append(pred_fine.cpu())
         test_img.append(imgs.cpu())
         test_gt.append(msks.cpu())
-        yhat = (pred_fine).cpu().long().flatten()
-        y = msks.cpu().flatten()
-
+        
+        # -------------------------
+        # Per-class IoU (as before)
+        # -------------------------
+        yhat = pred_fine.cpu().long().flatten()
+        y    = msks.cpu().flatten()
         for j in range(args.num_cls):
-            y_bi = y==j
-            yhat_bi = yhat==j
-            I = ((y_bi*yhat_bi).sum()).item()
-            U = (torch.logical_or(y_bi,yhat_bi).sum()).item()
-            class_iou[j] += I/(U+eps)
+            y_bi    = (y == j)
+            yhat_bi = (yhat == j)
+            I = ((y_bi & yhat_bi).sum()).item()
+            U = (torch.logical_or(y_bi, yhat_bi).sum()).item()
+            class_iou[j] += I / (U + eps)
 
-        # for cls in range(args.num_cls):
-        #     mask_pred_cls = ((pred_fine).cpu()==cls).float()
-        #     mask_gt_cls = (msks.cpu()==cls).float()
-        #     cls_dsc[cls] += dice_coeff(mask_pred_cls,mask_gt_cls).item()
-            
+        # -------------------------
+        # Per-class DSC (as before)
+        # -------------------------
         for cls in range(args.num_cls):
-            # Convert tensors to CPU numpy arrays for metric calculation
             mask_pred_cls_torch = (pred_fine.cpu() == cls)
-            mask_gt_cls_torch = (msks.cpu() == cls)
-            
-            # --- CALCULATE DSC ---
-            cls_dsc[cls] += dice_coeff(mask_pred_cls_torch.float(), mask_gt_cls_torch.float()).item()
-            
-            # --- CALCULATE NSD ---
-            # Convert to numpy for the scipy-based function
-            mask_pred_np = mask_pred_cls_torch.numpy().squeeze() # Squeeze to remove batch dim
-            mask_gt_np = mask_gt_cls_torch.numpy().squeeze()   # Squeeze to remove batch dim
-            
-            # Calculate NSD with a tolerance of 1 pixel (tau=1.0)
-            nsd_score = normalized_surface_dice(mask_pred_np, mask_gt_np, tau=1.0)
-            cls_nsd[cls] += nsd_score
+            mask_gt_cls_torch   = (msks.cpu() == cls)
+            cls_dsc[cls] += dice_coeff(
+                mask_pred_cls_torch.float(),
+                mask_gt_cls_torch.float()
+            ).item()
 
-    class_iou /=(i+1)
-    cls_dsc /=(i+1)
-    cls_nsd /= (i + 1)
+        # --------------------------------------------
+        # UNION foreground DSC + NSD (to match paper)
+        # --------------------------------------------
+        # Single binary mask: foreground = any class > 0
+        pred_union = (pred_fine > 0).cpu()
+        gt_union   = (msks      > 0).cpu()
 
-    save_folder = os.path.join('test_results',args.dir_checkpoint)
-    Path(save_folder).mkdir(parents=True,exist_ok = True)
+        # Union DSC
+        union_dsc_sum += dice_coeff(pred_union.float(), gt_union.float())
 
-    print(dataset_name)      
-    print('class dsc:',cls_dsc)      
-    print('class iou:',class_iou)
-    print('class nsd (tau=1.0):', cls_nsd)
+        # Prepare one-hot with 2 channels [bg, fg]
+        pred_oh = F.one_hot(pred_union.long(), num_classes=2).permute(0, 3, 1, 2).float()
+        gt_oh   = F.one_hot(gt_union.long(),   num_classes=2).permute(0, 3, 1, 2).float()
+
+        # NSD on foreground only (include_background=False above)
+        sd_union(pred_oh, gt_oh)
+        nsd_batch = sd_union.aggregate()   # tensor([value]) or tensor([nan]) if degenerate
+        sd_union.reset()
+
+        nsd_val = torch.nanmean(nsd_batch).item()  # NaN-safe
+        if np.isfinite(nsd_val):
+            nsd_union_sum += nsd_val
+            nsd_count += 1
+
+    # Averages
+    num_batches = i + 1
+    class_iou /= num_batches
+    cls_dsc   /= num_batches
+
+    union_dsc = union_dsc_sum / num_batches
+    union_nsd = nsd_union_sum / max(nsd_count, 1)
+
+    save_folder = os.path.join('test_results', args.dir_checkpoint)
+    Path(save_folder).mkdir(parents=True, exist_ok=True)
+
+    print(dataset_name)
+    print('class dsc:', cls_dsc)
+    print('class iou:', class_iou)
+    print(f'union dsc (foreground>0): {union_dsc:.4f}')
+    print(f'union nsd @ tau={tau:.1f}px (foreground only): {union_nsd:.4f}')
+
     
 if __name__ == "__main__":
     args = cfg.parse_args()

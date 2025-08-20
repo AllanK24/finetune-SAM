@@ -63,7 +63,7 @@ class ImageEncoderViT(nn.Module):
         self.in_chans = in_chans
         self.args = args
         self.depth = depth
-        self.dev = args.devices
+        # self.dev = args.devices
 
         self.patch_embed = PatchEmbed(
             kernel_size=(patch_size, patch_size),
@@ -71,14 +71,15 @@ class ImageEncoderViT(nn.Module):
             in_chans=in_chans,
             embed_dim=embed_dim,
         )
-        if self.args.if_split_encoder_gpus:
-            self.patch_embed = self.patch_embed.to(self.dev[0])
+        # if self.args.if_split_encoder_gpus:
+        #     self.patch_embed = self.patch_embed.to(self.dev[0])
 
         self.pos_embed: Optional[nn.Parameter] = None
         if use_abs_pos:
             # Initialize absolute positional embedding with pretrain image size.
             self.pos_embed = nn.Parameter(
-                torch.zeros(1, img_size // patch_size, img_size // patch_size, embed_dim,dtype=torch.float,device=self.dev[0]))
+                # torch.zeros(1, img_size // patch_size, img_size // patch_size, embed_dim,dtype=torch.float,device=self.dev[0]))
+                torch.zeros(1, img_size // patch_size, img_size // patch_size, embed_dim,dtype=torch.float))
 
         self.blocks = nn.ModuleList()
         for i in range(depth):
@@ -96,11 +97,11 @@ class ImageEncoderViT(nn.Module):
                 window_size=window_size if i not in global_attn_indexes else 0,
                 input_size=(img_size // patch_size, img_size // patch_size),
             )
-            if self.args.if_split_encoder_gpus:
-                if i<int(self.depth*self.args.gpu_fractions[0]):
-                    block.to(self.dev[0])
-                else:
-                    block.to(self.dev[1])
+            # if self.args.if_split_encoder_gpus:
+            #     if i<int(self.depth*self.args.gpu_fractions[0]):
+            #         block.to(self.dev[0])
+            #     else:
+            #         block.to(self.dev[1])
             self.blocks.append(block)
             
 
@@ -121,8 +122,8 @@ class ImageEncoderViT(nn.Module):
             ),
             LayerNorm2d(out_chans),
         )
-        if self.args.if_split_encoder_gpus:
-            self.neck = self.neck.to(self.dev[1])
+        # if self.args.if_split_encoder_gpus:
+        #     self.neck = self.neck.to(self.dev[1])
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -131,11 +132,11 @@ class ImageEncoderViT(nn.Module):
             x = x + self.pos_embed
 
         for i,blk in enumerate(self.blocks):
-            if self.args.if_split_encoder_gpus:
-                if i<int(self.depth*self.args.gpu_fractions[0]):
-                    x = x.to(self.dev[0])
-                else:
-                    x = x.to(self.dev[1])
+            # if self.args.if_split_encoder_gpus:
+            #     if i<int(self.depth*self.args.gpu_fractions[0]):
+            #         x = x.to(self.dev[0])
+            #     else:
+            #         x = x.to(self.dev[1])
             x = blk(x)
 
         x = self.neck(x.permute(0, 3, 1, 2))
