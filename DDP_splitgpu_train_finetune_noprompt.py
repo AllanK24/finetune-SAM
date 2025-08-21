@@ -228,7 +228,6 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
     
     model.to(device)
     
-    # --- MODIFY THIS LINE ---
     # Wrap the model with DDP and tell it which device to use
     ddp_model = DDP(model, device_ids=[device], output_device=device)
     
@@ -257,7 +256,7 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 msks = msks.to(device)
                 
                 # ---------- AMP forward + loss ----------
-                with autocast(dtype=torch.float16, device_type=device):  # T4 prefers FP16 autocast
+                with autocast(dtype=torch.float16, device_type='cuda'):  # T4 prefers FP16 autocast
                     img_emb = ddp_model.module.image_encoder(imgs)
                     sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
                         points=None,
@@ -323,7 +322,7 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                         msks = msks.to(device)
                         
                         # ---------- AMP in eval (saves mem/compute) ----------
-                        with autocast(dtype=torch.float16, device_type=device):
+                        with autocast(dtype=torch.float16, device_type='cuda'):
                             img_emb= ddp_model.module.image_encoder(imgs)
                             sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
                                 points=None,
