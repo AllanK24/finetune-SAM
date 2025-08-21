@@ -300,6 +300,9 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 pbar.set_description('Epoch num {}| train loss {} \n'.format(epoch,train_loss))
 
             if epoch%2==0:
+                # ✅ Add barrier before validation
+                dist.barrier()
+                
                 eval_loss=0
                 dsc = 0
                 ddp_model.eval()
@@ -361,14 +364,11 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                     
                     if should_stop.item() == 1:
                         break
-                    
-            if rank==0:
-                writer.close()   
+                
     except Exception as e:
         print(f"Error in rank {rank}: {e}")
         raise
     finally:
-        # **CRITICAL FIX**: Proper writer cleanup
         if rank == 0 and writer is not None:
             try:
                 # Flush any remaining data
@@ -383,12 +383,6 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
         
         cleanup()
 
-#def run_demo(demo_fn, size, model_basic,trainloader,valloader,dir_checkpoint):
-#    mp.spawn(demo_fn,
-#             args=(size, model_basic if args.finetune_type!="lora" else model_basic_lora,trainloader,valloader,dir_checkpoint),
-#             nprocs=size,
-#             join=True)
-
 def run_demo(demo_fn, size, model_basic_fn, train_dataset, eval_dataset, dir_checkpoint):
     mp.spawn(demo_fn,
              # Pass the datasets in the args tuple
@@ -398,11 +392,7 @@ def run_demo(demo_fn, size, model_basic_fn, train_dataset, eval_dataset, dir_che
     
 if __name__ == "__main__":
     dataset_name = args.dataset_name
-    print('train dataset: {}'.format(dataset_name)) 
-    #train_img_list = args.img_folder + dataset_name + '/train_5shot.csv'
-    #val_img_list = args.img_folder + dataset_name + '/val_5shot.csv'
-    # train_img_list = "/kaggle/input/xrayhip/train.csv"
-    # val_img_list = "/kaggle/input/xrayhip/val.csv"
+    print('train dataset: {}'.format(dataset_name))
 
     num_workers = 0
     if_vis = True
@@ -413,12 +403,5 @@ if __name__ == "__main__":
     
     train_dataset = Public_dataset(args,args.img_folder, args.mask_folder, args.train_img_list,phase='train',targets=[f'{args.targets}'],normalize_type='sam',if_prompt=False)
     val_dataset = Public_dataset(args,args.img_folder, args.mask_folder, args.val_img_list,phase='val',targets=[f'{args.targets}'],normalize_type='sam',if_prompt=False)
-    
-    # trainloader = DataLoader(train_dataset, batch_size=args.b, shuffle=False, num_workers=num_workers, sampler=train_sampler)
-    # valloader = DataLoader(eval_dataset, batch_size=args.b, shuffle=False, num_workers=num_workers, sampler=val_sampler)
-
-    #processes = []
-    #mp.set_start_method('spawn')
-
 
     run_demo(setup, size, model_basic_lora if args.finetune_type=="lora" else model_basic,train_dataset,val_dataset,args.dir_checkpoint)
