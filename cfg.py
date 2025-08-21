@@ -73,6 +73,7 @@ def parse_args():
     
   
     parser.add_argument('-evl_chunk', type=int, default=None , help='evaluation chunk')
+    parser.add_argument('-tau', type=float, default=1.0, help='tau parameter for NSD (used for evaluation script only)')
     opt = parser.parse_args()
 
     return opt

@@ -42,18 +42,7 @@ args = cfg.parse_args()
 def cleanup():
     dist.destroy_process_group()
 
-"""
-def setup(rank, world_size, model_basic, trainloader, valloader,dir_checkpoint, backend='nccl'): 
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12333'
-    # initialize the process group
-    dist.init_process_group(backend, rank=rank, world_size=world_size)
 
-    # Give the DataLoaders the samplers so they serve unique data slices
-    trainloader.sampler.set_epoch(0) # You can set this to the current epoch in the training loop
-    valloader.sampler.set_epoch(0)
-    model_basic(args,rank, world_size,trainloader,valloader,dir_checkpoint)
-"""
 def setup(rank, world_size, model_basic_fn, train_dataset, eval_dataset, dir_checkpoint, backend='nccl'):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12333'
@@ -61,7 +50,6 @@ def setup(rank, world_size, model_basic_fn, train_dataset, eval_dataset, dir_che
 
     # Pass the datasets down to the training function
     model_basic_fn(args, rank, world_size, train_dataset, eval_dataset, dir_checkpoint)
-
                     
 def model_basic(args,rank, world_size,trainloader,valloader,dir_checkpoint):
     dev0 = rank * 2
