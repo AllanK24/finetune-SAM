@@ -7,7 +7,7 @@ export CUDA_VISIBLE_DEVICES="0,1"
 # Use 'vit_b' or 'vit_l', etc.
 ARCH="vit_b"
 # The name of your dataset, used for creating the checkpoint directory
-DATASET_NAME="xrayhip"
+DATASET_NAME="mriheart"
 # The root of your Kaggle working directory
 BASE_DIR="/kaggle/working"
 # The path to the finetune-SAM code
