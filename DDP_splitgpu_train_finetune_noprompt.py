@@ -35,6 +35,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+import torchvision
 from utils.utils import vis_image
 from torch.amp import autocast, GradScaler
 import cfg
@@ -252,11 +253,11 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
             train_loss = 0
             for i,data in enumerate(trainloader):
                 imgs = data['image'].to(device)
-                msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
+                msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
                 msks = msks.to(device)
                 
                 # ---------- AMP forward + loss ----------
-                with autocast(dtype=torch.float16):  # T4 prefers FP16 autocast
+                with autocast(dtype=torch.float16, device_type=device):  # T4 prefers FP16 autocast
                     img_emb = ddp_model.module.image_encoder(imgs)
                     sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
                         points=None,
@@ -318,11 +319,11 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 with torch.no_grad():
                     for i,data in enumerate(valloader):
                         imgs = data['image'].to(device)
-                        msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
+                        msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
                         msks = msks.to(device)
                         
                         # ---------- AMP in eval (saves mem/compute) ----------
-                        with autocast(dtype=torch.float16):
+                        with autocast(dtype=torch.float16, device_type=device):
                             img_emb= ddp_model.module.image_encoder(imgs)
                             sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
                                 points=None,
