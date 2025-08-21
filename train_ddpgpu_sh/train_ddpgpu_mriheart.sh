@@ -43,7 +43,7 @@ python "${FINETUNE_SAM_DIR}/DDP_splitgpu_train_finetune_noprompt.py" \
     -epochs 200 \
     -warmup_period 200 \
     -lr 0.0001 \
-    -b 6 \
+    -b 8 \
     -if_encoder_lora_layer True \
     -if_decoder_lora_layer True \
     -encoder_lora_layer "[]" \
