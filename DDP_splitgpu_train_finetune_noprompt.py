@@ -37,7 +37,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchvision
 from utils.utils import vis_image
-from torch.amp import autocast, GradScaler
 import cfg
 args = cfg.parse_args()
 
@@ -236,8 +235,6 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
     criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
     criterion2 = nn.CrossEntropyLoss()
     
-    scaler = GradScaler(enabled=True)  # AMP: dynamic loss scaling
-    
     # Only rank 0 shows progress bar
     pbar = tqdm(range(epochs)) if rank == 0 else range(epochs)
     
@@ -255,33 +252,27 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
                 msks = msks.to(device)
                 
-                # ---------- AMP forward + loss ----------
-                with autocast(dtype=torch.float16, device_type='cuda'):  # T4 prefers FP16 autocast
-                    img_emb = ddp_model.module.image_encoder(imgs)
-                    sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
-                        points=None,
-                        boxes=None,
-                        masks=None,
-                    )
-                    pred, _ = ddp_model.module.mask_decoder(
-                                    image_embeddings=img_emb,
-                                    image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
-                                    sparse_prompt_embeddings=sparse_emb,
-                                    dense_prompt_embeddings=dense_emb, 
-                                    multimask_output=True,
-                                )
-                    
-                    loss_dice = criterion1(pred,msks.float()) 
-                    loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
-                    loss =  loss_dice + loss_ce
-                # ---------------------------------------
+                img_emb = ddp_model.module.image_encoder(imgs)
+                sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
+                    points=None,
+                    boxes=None,
+                    masks=None,
+                )
+                pred, _ = ddp_model.module.mask_decoder(
+                                image_embeddings=img_emb,
+                                image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
+                                sparse_prompt_embeddings=sparse_emb,
+                                dense_prompt_embeddings=dense_emb, 
+                                multimask_output=True,
+                            )
                 
-                # ---------- AMP backward + step ----------
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                loss_dice = criterion1(pred,msks.float()) 
+                loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
+                loss =  loss_dice + loss_ce
+                
+                loss.backward()
+                optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-                # -----------------------------------------
                 
                 if args.if_warmup and iter_num < args.warmup_period:
                     lr_ = args.lr * ((iter_num + 1) / args.warmup_period)
@@ -309,7 +300,6 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 pbar.set_description('Epoch num {}| train loss {} \n'.format(epoch,train_loss))
 
             if epoch%2==0:
-                # ✅ Add barrier before validation
                 dist.barrier()
                 
                 eval_loss=0
@@ -321,24 +311,22 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                         msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
                         msks = msks.to(device)
                         
-                        # ---------- AMP in eval (saves mem/compute) ----------
-                        with autocast(dtype=torch.float16, device_type='cuda'):
-                            img_emb= ddp_model.module.image_encoder(imgs)
-                            sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
-                                points=None,
-                                boxes=None,
-                                masks=None,
-                            )
-                            pred, _ = ddp_model.module.mask_decoder(
-                                            image_embeddings=img_emb,
-                                            image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
-                                            sparse_prompt_embeddings=sparse_emb,
-                                            dense_prompt_embeddings=dense_emb, 
-                                            multimask_output=True,
-                                        )
-                    
-                            loss = criterion1(pred,msks.float()) + criterion2(pred,torch.squeeze(msks.long(),1))
-                        # -----------------------------------------------------    
+                        
+                        img_emb= ddp_model.module.image_encoder(imgs)
+                        sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
+                            points=None,
+                            boxes=None,
+                            masks=None,
+                        )
+                        pred, _ = ddp_model.module.mask_decoder(
+                                        image_embeddings=img_emb,
+                                        image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
+                                        sparse_prompt_embeddings=sparse_emb,
+                                        dense_prompt_embeddings=dense_emb, 
+                                        multimask_output=True,
+                                    )
+                
+                        loss = criterion1(pred,msks.float()) + criterion2(pred,torch.squeeze(msks.long(),1))
                         
                         eval_loss +=loss.item()
                         dsc_batch = dice_coeff((pred[:,1,:,:].cpu()>0).long(),msks.cpu().long()).item()
