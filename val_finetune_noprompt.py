@@ -27,7 +27,6 @@ from utils.utils import vis_image
 import cfg
 from argparse import Namespace
 import json
-from utils.nsd import normalized_surface_dice
 from monai.metrics.surface_dice import SurfaceDiceMetric
 import torch.nn.functional as F
 from torchvision.transforms import InterpolationMode

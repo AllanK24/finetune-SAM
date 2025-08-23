@@ -51,147 +51,147 @@ def setup(rank, world_size, model_basic_fn, train_dataset, eval_dataset, dir_che
     # Pass the datasets down to the training function
     model_basic_fn(args, rank, world_size, train_dataset, eval_dataset, dir_checkpoint)
                     
-def model_basic(args,rank, world_size,trainloader,valloader,dir_checkpoint):
-    dev0 = rank * 2
-    dev1 = rank * 2 + 1
+# def model_basic(args,rank, world_size,trainloader,valloader,dir_checkpoint):
+#     dev0 = rank * 2
+#     dev1 = rank * 2 + 1
     
-    args.devices = [dev0,dev1]
+#     args.devices = [dev0,dev1]
     
-    if args.if_warmup:
-        b_lr = args.lr / args.warmup_period
-    else:
-        b_lr = args.lr
+#     if args.if_warmup:
+#         b_lr = args.lr / args.warmup_period
+#     else:
+#         b_lr = args.lr
     
 
-    epochs = args.epochs
-    iter_num = 0
-    max_iterations = epochs * len(trainloader) 
-    writer = SummaryWriter(dir_checkpoint + '/log')
+#     epochs = args.epochs
+#     iter_num = 0
+#     max_iterations = epochs * len(trainloader) 
+#     writer = SummaryWriter(dir_checkpoint + '/log')
     
-    print(f"Running basic DDP example on rank {rank}.")
-    # create model and move it to GPU with id rank
-    model = sam_model_registry["vit_b"](args,checkpoint=args.sam_ckpt,num_classes=2)
-    #print(model)
+#     print(f"Running basic DDP example on rank {rank}.")
+#     # create model and move it to GPU with id rank
+#     model = sam_model_registry["vit_b"](args,checkpoint=args.sam_ckpt,num_classes=2)
+#     #print(model)
 
-    if args.finetune_type == 'adapter':
-        for n, value in model.named_parameters():
-            if "Adapter" not in n: # only update parameters in adapter
-                value.requires_grad = False
-    elif args.finetune_type == 'vanilla' and args.if_update_encoder==False:      
-        for n, value in model.image_encoder.named_parameters():
-            value.requires_grad = False
-    elif args.finetune_type == 'lora':
-        model = LoRA_Sam(args,model,r=4).sam
+#     if args.finetune_type == 'adapter':
+#         for n, value in model.named_parameters():
+#             if "Adapter" not in n: # only update parameters in adapter
+#                 value.requires_grad = False
+#     elif args.finetune_type == 'vanilla' and args.if_update_encoder==False:      
+#         for n, value in model.image_encoder.named_parameters():
+#             value.requires_grad = False
+#     elif args.finetune_type == 'lora':
+#         model = LoRA_Sam(args,model,r=4).sam
         
     
-    ddp_model = DDP(model)
+#     ddp_model = DDP(model)
     
-    optimizer = optim.AdamW(ddp_model.parameters(), lr=b_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.1, amsgrad=False)
-    optimizer.zero_grad()
-    criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
-    criterion2 = nn.CrossEntropyLoss()
-    pbar = tqdm(range(epochs))
-    val_largest_dsc = 0
-    last_update_epoch = 0
-    for epoch in pbar:
-        ddp_model.train()
-        train_loss = 0
-        for i,data in enumerate(trainloader):
-            imgs = data['image'].to(dev0)
-            msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
-            msks = msks.to(dev1) # output will be in device 1
-            img_emb= ddp_model.module.image_encoder(imgs)
-            sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
-            points=None,
-            boxes=None,
-            masks=None,
-            )
-            pred, _ = ddp_model.module.mask_decoder(
-                            image_embeddings=img_emb,
-                            image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
-                            sparse_prompt_embeddings=sparse_emb,
-                            dense_prompt_embeddings=dense_emb, 
-                            multimask_output=True,
-                          )
+#     optimizer = optim.AdamW(ddp_model.parameters(), lr=b_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.1, amsgrad=False)
+#     optimizer.zero_grad()
+#     criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
+#     criterion2 = nn.CrossEntropyLoss()
+#     pbar = tqdm(range(epochs))
+#     val_largest_dsc = 0
+#     last_update_epoch = 0
+#     for epoch in pbar:
+#         ddp_model.train()
+#         train_loss = 0
+#         for i,data in enumerate(trainloader):
+#             imgs = data['image'].to(dev0)
+#             msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
+#             msks = msks.to(dev1) # output will be in device 1
+#             img_emb= ddp_model.module.image_encoder(imgs)
+#             sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
+#             points=None,
+#             boxes=None,
+#             masks=None,
+#             )
+#             pred, _ = ddp_model.module.mask_decoder(
+#                             image_embeddings=img_emb,
+#                             image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
+#                             sparse_prompt_embeddings=sparse_emb,
+#                             dense_prompt_embeddings=dense_emb, 
+#                             multimask_output=True,
+#                           )
             
-            loss_dice = criterion1(pred,msks.float()) 
-            loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
-            loss =  loss_dice + loss_ce
+#             loss_dice = criterion1(pred,msks.float()) 
+#             loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
+#             loss =  loss_dice + loss_ce
             
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+#             loss.backward()
+#             optimizer.step()
+#             optimizer.zero_grad(set_to_none=True)
             
-            if args.if_warmup and iter_num < args.warmup_period:
-                lr_ = args.lr * ((iter_num + 1) / args.warmup_period)
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = lr_
+#             if args.if_warmup and iter_num < args.warmup_period:
+#                 lr_ = args.lr * ((iter_num + 1) / args.warmup_period)
+#                 for param_group in optimizer.param_groups:
+#                     param_group['lr'] = lr_
 
-            else:
-                if args.if_warmup:
-                    shift_iter = iter_num - args.warmup_period
-                    assert shift_iter >= 0, f'Shift iter is {shift_iter}, smaller than zero'
-                    lr_ = args.lr * (1.0 - shift_iter / max_iterations) ** 0.9  # learning rate adjustment depends on the max iterations
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] = lr_
+#             else:
+#                 if args.if_warmup:
+#                     shift_iter = iter_num - args.warmup_period
+#                     assert shift_iter >= 0, f'Shift iter is {shift_iter}, smaller than zero'
+#                     lr_ = args.lr * (1.0 - shift_iter / max_iterations) ** 0.9  # learning rate adjustment depends on the max iterations
+#                     for param_group in optimizer.param_groups:
+#                         param_group['lr'] = lr_
 
-            train_loss += loss.item()
-            iter_num+=1
-            writer.add_scalar('info/lr', lr_, iter_num)
-            writer.add_scalar('info/total_loss', loss, iter_num)
-            writer.add_scalar('info/loss_ce', loss_ce, iter_num)
-            writer.add_scalar('info/loss_dice', loss_dice, iter_num)
+#             train_loss += loss.item()
+#             iter_num+=1
+#             writer.add_scalar('info/lr', lr_, iter_num)
+#             writer.add_scalar('info/total_loss', loss, iter_num)
+#             writer.add_scalar('info/loss_ce', loss_ce, iter_num)
+#             writer.add_scalar('info/loss_dice', loss_dice, iter_num)
 
-        train_loss /= (i+1)
-        pbar.set_description('Epoch num {}| train loss {} \n'.format(epoch,train_loss))
+#         train_loss /= (i+1)
+#         pbar.set_description('Epoch num {}| train loss {} \n'.format(epoch,train_loss))
 
-        if epoch%2==0:
-            eval_loss=0
-            dsc = 0
-            ddp_model.eval()
-            with torch.no_grad():
-                for i,data in enumerate(valloader):
-                    imgs = data['image'].to(dev0)
-                    msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
-                    msks = msks.to(dev1)
-                    img_emb= ddp_model.module.image_encoder(imgs)
-                    sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
-                    points=None,
-                    boxes=None,
-                    masks=None,
-                    )
-                    pred, _ = ddp_model.module.mask_decoder(
-                                    image_embeddings=img_emb,
-                                    image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
-                                    sparse_prompt_embeddings=sparse_emb,
-                                    dense_prompt_embeddings=dense_emb, 
-                                    multimask_output=True,
-                                  )
+#         if epoch%2==0:
+#             eval_loss=0
+#             dsc = 0
+#             ddp_model.eval()
+#             with torch.no_grad():
+#                 for i,data in enumerate(valloader):
+#                     imgs = data['image'].to(dev0)
+#                     msks = torchvision.transforms.Resize((args.out_size,args.out_size))(data['mask'])
+#                     msks = msks.to(dev1)
+#                     img_emb= ddp_model.module.image_encoder(imgs)
+#                     sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
+#                     points=None,
+#                     boxes=None,
+#                     masks=None,
+#                     )
+#                     pred, _ = ddp_model.module.mask_decoder(
+#                                     image_embeddings=img_emb,
+#                                     image_pe=ddp_model.module.prompt_encoder.get_dense_pe(), 
+#                                     sparse_prompt_embeddings=sparse_emb,
+#                                     dense_prompt_embeddings=dense_emb, 
+#                                     multimask_output=True,
+#                                   )
             
-                    loss = criterion1(pred,msks.float()) + criterion2(pred,torch.squeeze(msks.long(),1))
-                    eval_loss +=loss.item()
-                    dsc_batch = dice_coeff((pred[:,1,:,:].cpu()>0).long(),msks.cpu().long()).item()
-                    dsc+=dsc_batch
+#                     loss = criterion1(pred,msks.float()) + criterion2(pred,torch.squeeze(msks.long(),1))
+#                     eval_loss +=loss.item()
+#                     dsc_batch = dice_coeff((pred[:,1,:,:].cpu()>0).long(),msks.cpu().long()).item()
+#                     dsc+=dsc_batch
 
-                eval_loss /= (i+1)
-                dsc /= (i+1)
-                writer.add_scalar('eval/loss', eval_loss, epoch)
-                writer.add_scalar('eval/dice', dsc, epoch)
+#                 eval_loss /= (i+1)
+#                 dsc /= (i+1)
+#                 writer.add_scalar('eval/loss', eval_loss, epoch)
+#                 writer.add_scalar('eval/dice', dsc, epoch)
                 
-                print('***Eval Epoch num {} | val loss {} | dsc {} \n'.format(epoch,eval_loss,dsc))
-                if dsc>val_largest_dsc:
-                    val_largest_dsc = dsc
-                    last_update_epoch = epoch
-                    print('largest DSC now: {}'.format(dsc))
-                    Path(dir_checkpoint).mkdir(parents=True,exist_ok = True)
-                    torch.save(ddp_model.module.state_dict(),dir_checkpoint + '/checkpoint_best.pth')
-                elif (epoch-last_update_epoch)>20:
-                    print('Training finished####################')
-                    # the network haven't been updated for 20 epochs
-                    break
+#                 print('***Eval Epoch num {} | val loss {} | dsc {} \n'.format(epoch,eval_loss,dsc))
+#                 if dsc>val_largest_dsc:
+#                     val_largest_dsc = dsc
+#                     last_update_epoch = epoch
+#                     print('largest DSC now: {}'.format(dsc))
+#                     Path(dir_checkpoint).mkdir(parents=True,exist_ok = True)
+#                     torch.save(ddp_model.module.state_dict(),dir_checkpoint + '/checkpoint_best.pth')
+#                 elif (epoch-last_update_epoch)>20:
+#                     print('Training finished####################')
+#                     # the network haven't been updated for 20 epochs
+#                     break
                     
-    writer.close()   
-    cleanup()
+#     writer.close()   
+#     cleanup()
     
 
 def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpoint):
@@ -406,4 +406,4 @@ if __name__ == "__main__":
     train_dataset = Public_dataset(args,args.img_folder, args.mask_folder, args.train_img_list,phase='train',targets=[f'{args.targets}'],normalize_type='sam',if_prompt=False)
     val_dataset = Public_dataset(args,args.img_folder, args.mask_folder, args.val_img_list,phase='val',targets=[f'{args.targets}'],normalize_type='sam',if_prompt=False)
 
-    run_demo(setup, size, model_basic_lora if args.finetune_type=="lora" else model_basic,train_dataset,val_dataset,args.dir_checkpoint)
+    run_demo(setup, size, model_basic_lora, train_dataset,val_dataset,args.dir_checkpoint)
