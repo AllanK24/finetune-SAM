@@ -27,7 +27,6 @@ import torch.nn.functional as F
 from torch.nn.functional import one_hot
 from pathlib import Path
 from tqdm import tqdm
-from utils.losses import DiceLoss
 from utils.dsc import dice_coeff
 import cv2
 import monai
@@ -235,7 +234,7 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
     # criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
     ### Trying softmax loss
     criterion1 = monai.losses.DiceLoss(
-        softmax=True, to_onehot_y=True, include_background=True, reduction='mean'
+        softmax=True, to_onehot_y=True, include_background=False, reduction='mean'
     )
     criterion2 = nn.CrossEntropyLoss()
     
@@ -254,7 +253,9 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
             for i,data in enumerate(trainloader):
                 imgs = data['image'].to(device)
                 msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
-                msks = msks.to(device)
+                msks = (msks > 0).long().to(device)    # ensure {0,1} Long on device
+                tgt_1ch = msks                         # (N,1,H,W) for Dice
+                tgt_idx = tgt_1ch.squeeze(1)           # (N,H,W)   for CE
                 
                 img_emb = ddp_model.module.image_encoder(imgs)
                 sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
@@ -272,9 +273,9 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                 
                 # loss_dice = criterion1(pred,msks.float()) 
                 # loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
-                tgt = torch.squeeze(msks.long(), 1)              # (N,H,W) in {0,1}
-                loss_dice = criterion1(pred, tgt)                # Dice sees class indices (to_onehot_y=True)
-                loss_ce   = criterion2(pred, tgt)                # CE with class indices
+        
+                loss_dice = criterion1(pred, tgt_1ch)
+                loss_ce   = criterion2(pred, tgt_idx)
                 
                 loss =  loss_dice + loss_ce
                 
@@ -319,7 +320,6 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                         msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=torchvision.transforms.InterpolationMode.NEAREST)(data['mask'])
                         msks = msks.to(device)
                         
-                        
                         img_emb= ddp_model.module.image_encoder(imgs)
                         sparse_emb, dense_emb = ddp_model.module.prompt_encoder(
                             points=None,
@@ -334,13 +334,14 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                                         multimask_output=True,
                                     )
                 
-                        tgt = torch.squeeze(msks.long(), 1)                              # (N,H,W) {0,1}
-                        loss = criterion1(pred, tgt) + criterion2(pred, tgt)
+                        tgt_1ch = msks.long()
+                        tgt_idx = tgt_1ch.squeeze(1)
+                        loss = criterion1(pred, tgt_1ch) + criterion2(pred, tgt_idx)
                         eval_loss += loss.item()
 
-                        probs   = torch.softmax(pred, dim=1)                             # (N,2,H,W)
-                        pred_fg = (probs[:, 1, :, :] > 0.5).long().cpu()                 # or probs.argmax(dim=1)
-                        dsc_batch = dice_coeff(pred_fg, tgt.cpu()).item()
+                        probs   = torch.softmax(pred, dim=1)          # (N,2,H,W)
+                        pred_fg = (probs[:, 1] > 0.5).long().cpu()    # or probs.argmax(dim=1)
+                        dsc_batch = dice_coeff(pred_fg, tgt_idx.cpu()).item()
                         dsc += dsc_batch
 
                     eval_loss /= (i+1)
