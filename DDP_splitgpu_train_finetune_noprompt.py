@@ -232,7 +232,11 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
     
     optimizer = optim.AdamW(ddp_model.parameters(), lr=b_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.1, amsgrad=False)
     optimizer.zero_grad()
-    criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
+    # criterion1 = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, to_onehot_y=True,reduction='mean')
+    ### Trying softmax loss
+    criterion1 = monai.losses.DiceLoss(
+        softmax=True, to_onehot_y=True, include_background=True, reduction='mean'
+    )
     criterion2 = nn.CrossEntropyLoss()
     
     # Only rank 0 shows progress bar
@@ -266,8 +270,12 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                                 multimask_output=True,
                             )
                 
-                loss_dice = criterion1(pred,msks.float()) 
-                loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
+                # loss_dice = criterion1(pred,msks.float()) 
+                # loss_ce = criterion2(pred,torch.squeeze(msks.long(),1))
+                tgt = torch.squeeze(msks.long(), 1)              # (N,H,W) in {0,1}
+                loss_dice = criterion1(pred, tgt)                # Dice sees class indices (to_onehot_y=True)
+                loss_ce   = criterion2(pred, tgt)                # CE with class indices
+                
                 loss =  loss_dice + loss_ce
                 
                 loss.backward()
@@ -326,11 +334,14 @@ def model_basic_lora(args,rank, world_size,train_dataset,val_dataset,dir_checkpo
                                         multimask_output=True,
                                     )
                 
-                        loss = criterion1(pred,msks.float()) + criterion2(pred,torch.squeeze(msks.long(),1))
-                        
-                        eval_loss +=loss.item()
-                        dsc_batch = dice_coeff((pred[:,1,:,:].cpu()>0).long(),msks.cpu().long()).item()
-                        dsc+=dsc_batch
+                        tgt = torch.squeeze(msks.long(), 1)                              # (N,H,W) {0,1}
+                        loss = criterion1(pred, tgt) + criterion2(pred, tgt)
+                        eval_loss += loss.item()
+
+                        probs   = torch.softmax(pred, dim=1)                             # (N,2,H,W)
+                        pred_fg = (probs[:, 1, :, :] > 0.5).long().cpu()                 # or probs.argmax(dim=1)
+                        dsc_batch = dice_coeff(pred_fg, tgt.cpu()).item()
+                        dsc += dsc_batch
 
                     eval_loss /= (i+1)
                     dsc /= (i+1)
