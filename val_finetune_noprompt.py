@@ -1,32 +1,18 @@
-from models.sam import SamPredictor, sam_model_registry
-from models.sam.utils.transforms import ResizeLongestSide
+from models.sam import sam_model_registry
 from models.sam_LoRa import LoRA_Sam
 #Scientific computing 
 import numpy as np
 import os
 #Pytorch packages
 import torch
-from torch import nn
-import torch.optim as optim
 import torchvision
-from torchvision import datasets
-#Visulization
-import matplotlib.pyplot as plt
-from torchvision import transforms
-from PIL import Image
 #Others
-from torch.utils.data import DataLoader, Subset
-from torch.autograd import Variable
-import copy
+from torch.utils.data import DataLoader
 from utils.dataset import Public_dataset
 from pathlib import Path
 from tqdm import tqdm
-from utils.losses import DiceLoss
 from utils.dsc import dice_coeff
-from utils.utils import vis_image
 import cfg
-from argparse import Namespace
-import json
 from monai.metrics.surface_dice import SurfaceDiceMetric
 import torch.nn.functional as F
 from torchvision.transforms import InterpolationMode
@@ -67,8 +53,11 @@ def main(args,test_img_list):
     for i,data in enumerate(tqdm(testloader)):
         imgs = data['image'].to('cuda')
         
-        msks = torchvision.transforms.Resize((args.out_size,args.out_size), interpolation=InterpolationMode.NEAREST)(data['mask'])
-        msks = msks.to('cuda')
+        msks = torchvision.transforms.Resize(
+            (args.out_size, args.out_size),
+            interpolation=InterpolationMode.NEAREST
+        )(data['mask'].float())          # ensure numeric for Resize
+        msks = (msks > 0.5).long().to('cuda')   # (B,1,H,W) in {0,1}
         img_name_list.append(data['img_name'][0])
 
         with torch.no_grad():
@@ -84,72 +73,76 @@ def main(args,test_img_list):
                             image_pe=sam_fine_tune.prompt_encoder.get_dense_pe(), 
                             sparse_prompt_embeddings=sparse_emb,
                             dense_prompt_embeddings=dense_emb, 
-                            multimask_output=True,
+                            multimask_output=False,
                           )
-        
-        # Predicted class map [B,H,W]
-        pred_fine = pred_logits.argmax(dim=1)
+            
+        # --- Resize GT to pred size ---
+        H, W = pred_logits.shape[-2:]
+        msks = torchvision.transforms.Resize(
+            (H, W), interpolation=InterpolationMode.NEAREST
+        )(data['mask'].float())
+        msks = (msks > 0.5).long().to('cuda')     # (B,1,H,W) ∈ {0,1}
+        tgt_idx = msks.squeeze(1)                 # (B,H,W)
 
-        pred_msk.append(pred_fine.cpu())
-        test_img.append(imgs.cpu())
-        test_gt.append(msks.cpu())
+        # --- Turn logits into a class map (B,H,W) in {0,1} ---
+        C = pred_logits.shape[1]
+        if C == 2:
+            probs     = torch.softmax(pred_logits, dim=1)  # (B,2,H,W)
+            pred_cls  = probs.argmax(dim=1)                # (B,H,W)
+        elif C == 1:
+            prob_fg   = torch.sigmoid(pred_logits[:, 0])   # (B,H,W)
+            pred_cls  = (prob_fg > 0.5).long()
+        else:
+            raise RuntimeError(f"Unexpected #channels: {C} (expected 1 or 2)")
+
+        # --- Sanity checks ---
+        assert tgt_idx.shape[-2:] == pred_cls.shape[-2:], "GT/pred size mismatch"
+        uvals = tgt_idx.unique()
+        assert set(uvals.tolist()).issubset({0,1}), f"Bad target values: {uvals}"
 
         # -------------------------
-        # Per-class IoU (as before)
+        # Per-class IoU (macro)
         # -------------------------
-        yhat = pred_fine.cpu().long().flatten()
-        # if msks has shape [B,1,H,W], squeeze channel before flatten
-        y_src = msks.cpu()
-        if y_src.ndim == 4 and y_src.size(1) == 1:
-            y_src = y_src.squeeze(1)
-        y = y_src.flatten()
-
-        for j in range(args.num_cls):
-            y_bi    = (y == j)
-            yhat_bi = (yhat == j)
-            I = ((y_bi & yhat_bi).sum()).item()
-            U = (torch.logical_or(y_bi, yhat_bi).sum()).item()
-            class_iou[j] += I / (U + eps)
+        yhat = pred_cls.flatten()
+        y    = tgt_idx.flatten()
+        for j in range(2):  # 0=bg, 1=fg
+            y_bi, yhat_bi = (y == j), (yhat == j)
+            I = (y_bi & yhat_bi).sum().item()
+            U = torch.logical_or(y_bi, yhat_bi).sum().item()
+            class_iou[j] += I / (U + 1e-9)
 
         # -------------------------
-        # Per-class DSC (as before)
+        # Per-class DSC (macro)
         # -------------------------
-        msrc = msks.cpu()
-        if msrc.ndim == 4 and msrc.size(1) == 1:
-            msrc = msrc.squeeze(1)  # [B,H,W]
-
-        for cls in range(args.num_cls):
-            mask_pred_cls_torch = (pred_fine.cpu() == cls)        # [B,H,W]
-            mask_gt_cls_torch   = (msrc == cls)                   # [B,H,W]
-            cls_dsc[cls] += dice_coeff(
-                mask_pred_cls_torch.float(),
-                mask_gt_cls_torch.float()
-            ).item()
+        for cls in range(2):
+            mask_pred_cls = (pred_cls == cls).float()
+            mask_gt_cls   = (tgt_idx  == cls).float()
+            cls_dsc[cls] += dice_coeff(mask_pred_cls, mask_gt_cls).item()
 
         # --------------------------------------------
-        # UNION foreground DSC + NSD (to match paper)
+        # UNION foreground DSC + NSD
         # --------------------------------------------
-        pred_union = (pred_fine > 0).cpu()       # [B,H,W]
-        gt_union   = (msrc > 0).cpu()            # [B,H,W] (already squeezed)
+        pred_union = (pred_cls > 0).float()
+        gt_union   = (tgt_idx  > 0).float()
 
-        # Union DSC
-        union_dsc_sum += dice_coeff(pred_union.float(), gt_union.float()).item()
+        union_dsc_sum += dice_coeff(pred_union, gt_union).item()
 
-        # One-hot -> [B,H,W,2] then move class axis to channel dim: [B,2,H,W]
-        pred_oh = F.one_hot(pred_union.long(), num_classes=2)
-        gt_oh   = F.one_hot(gt_union.long(),   num_classes=2)
-        pred_oh = pred_oh.movedim(-1, 1).float()
-        gt_oh   = gt_oh.movedim(-1, 1).float()
+        pred_oh = F.one_hot(pred_union.long(), num_classes=2).movedim(-1, 1).float()
+        gt_oh   = F.one_hot(gt_union.long(),   num_classes=2).movedim(-1, 1).float()
 
-        # NSD on foreground only
         sd_union(pred_oh, gt_oh)
-        nsd_batch = sd_union.aggregate()   # tensor([value]) or tensor([nan])
-        sd_union.reset()
-
+        nsd_batch = sd_union.aggregate(); sd_union.reset()
         nsd_val = torch.nanmean(nsd_batch).item()
         if np.isfinite(nsd_val):
             nsd_union_sum += nsd_val
             nsd_count += 1
+
+            
+        if i == 0:
+            print("logits shape:", pred_logits.shape)            # expect [B,2,H,W]
+            print("mask uniques:", torch.unique(tgt_idx).tolist())  # expect [0, 1]
+            # empty_rate = (pred_fine.sum(dim=(1,2)) == 0).float().mean().item()
+            # print("empty FG pred rate:", empty_rate)
 
     # Averages
     num_batches = i + 1
