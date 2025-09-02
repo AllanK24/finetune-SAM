@@ -1,4 +1,5 @@
 import argparse
+from quanta.default_trg_modules import TRG_MODULES
 
 def parse_args():    
     parser = argparse.ArgumentParser()
@@ -14,7 +15,7 @@ def parse_args():
     parser.add_argument('-test_img_list', type=str, default='./datasets/train.csv')
     parser.add_argument('-targets', type=str,default='combine_all')
 
-    parser.add_argument('-finetune_type', type=str, default='adapter', help='normalization type, pick among vanilla,adapter,lora')
+    parser.add_argument('-finetune_type', type=str, default='lora', help='normalization type, pick among vanilla,adapter,lora,quanta')
     parser.add_argument('-normalize_type', type=str, default='sam', help='normalization type, pick between sam or medsam')
     
     parser.add_argument('-dir_checkpoint', type=str, default='checkpoints', help='the checkpoint folder to save final model')
@@ -71,9 +72,19 @@ def parse_args():
     parser.add_argument('-devices', type=list, default=[0,1] , help='if split encoder to multiple gpus')
     parser.add_argument('-gpu_fractions', type=list, default=[0.5,0.5] , help='how to split encoder to multiple gpus')
     
-  
+    # Quanta parameters
+    parser.add_argument('-d', type=int, default=3, help="quanta number of dimensions")
+    parser.add_argument('-per_dim_features', type=list, default=[12, 8, 8], help='List of the number of features per dimension. If not provided, the features are equally divided.')
+    parser.add_argument("-quanta_dropout", type=float, default=0.0, help="quanta dropout")
+    parser.add_argument("-target_modules", type=list, default=TRG_MODULES, help="quanta target modules")
+    parser.add_argument('-bias', type=str, default="none", help="quanta bias")
+    parser.add_argument('-merge_weights', type=bool, default=True, help='merge quanta weights with the model')
+    ###
+    
     parser.add_argument('-evl_chunk', type=int, default=None , help='evaluation chunk')
+    
     parser.add_argument('-tau', type=float, default=1.0, help='tau parameter for NSD (used for evaluation script only)')
+    
     opt = parser.parse_args()
 
     return opt
