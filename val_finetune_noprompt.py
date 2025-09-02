@@ -1,35 +1,22 @@
-from models.sam import SamPredictor, sam_model_registry
-from models.sam.utils.transforms import ResizeLongestSide
+from models.sam import sam_model_registry
 from models.sam_LoRa import LoRA_Sam
 #Scientific computing 
 import numpy as np
 import os
 #Pytorch packages
 import torch
-from torch import nn
-import torch.optim as optim
 import torchvision
-from torchvision import datasets
-#Visulization
-import matplotlib.pyplot as plt
-from torchvision import transforms
-from PIL import Image
 #Others
-from torch.utils.data import DataLoader, Subset
-from torch.autograd import Variable
-import copy
+from torch.utils.data import DataLoader
 from utils.dataset import Public_dataset
 from pathlib import Path
 from tqdm import tqdm
-from utils.losses import DiceLoss
 from utils.dsc import dice_coeff
-from utils.utils import vis_image
 import cfg
-from argparse import Namespace
-import json
 from monai.metrics.surface_dice import SurfaceDiceMetric
 import torch.nn.functional as F
 from torchvision.transforms import InterpolationMode
+from utils.count_params import count_parameters
 
 def main(args,test_img_list):
     # change to 'combine_all' if you want to combine all targets into 1 cls
@@ -41,6 +28,12 @@ def main(args,test_img_list):
         sam = sam_model_registry[args.arch](args,checkpoint=os.path.join(args.sam_ckpt),num_classes=args.num_cls)
         sam_fine_tune = LoRA_Sam(args,sam,r=4).to('cuda').sam
         sam_fine_tune.load_state_dict(torch.load(args.dir_checkpoint + '/checkpoint_best.pth'), strict = False)
+    elif args.finetune_type == 'quanta':
+        sam_fine_tune = sam_model_registry[args.arch](args,checkpoint=os.path.join(args.dir_checkpoint,'checkpoint_best.pth'),num_classes=args.num_cls)        
+        total, trainable = count_parameters(sam_fine_tune)
+        print(f"Total parameters: {total:,}")
+        print(f"Trainable parameters: {trainable:,}")
+        print(f"Frozen parameters: {total - trainable:,}")
         
     sam_fine_tune = sam_fine_tune.to('cuda').eval()
     class_iou = torch.zeros(args.num_cls,dtype=torch.float)
