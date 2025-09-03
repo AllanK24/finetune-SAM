@@ -17,6 +17,7 @@ from monai.metrics.surface_dice import SurfaceDiceMetric
 import torch.nn.functional as F
 from torchvision.transforms import InterpolationMode
 from utils.count_params import count_parameters
+from quanta import QuanTAConfig, QuanTAModel
 
 def main(args,test_img_list):
     # change to 'combine_all' if you want to combine all targets into 1 cls
@@ -29,8 +30,58 @@ def main(args,test_img_list):
         sam_fine_tune = LoRA_Sam(args,sam,r=4).to('cuda').sam
         sam_fine_tune.load_state_dict(torch.load(args.dir_checkpoint + '/checkpoint_best.pth'), strict = False)
     elif args.finetune_type == 'quanta':
-        sam_fine_tune = sam_model_registry[args.arch](args,checkpoint=os.path.join(args.dir_checkpoint,'checkpoint_best.pth'),num_classes=args.num_cls)        
+        sam = sam_model_registry[args.arch](args,checkpoint=os.path.join(args.sam_ckpt),num_classes=args.num_cls)
+        quanta_config = QuanTAConfig(
+            d=3,
+            per_dim_features=[12,8,8],
+            target_modules=[
+                "image_encoder.blocks.0.attn.qkv",
+                "image_encoder.blocks.1.attn.qkv",
+                "image_encoder.blocks.2.attn.qkv",
+                "image_encoder.blocks.3.attn.qkv",
+                "image_encoder.blocks.4.attn.qkv",
+                "image_encoder.blocks.5.attn.qkv",
+                "image_encoder.blocks.6.attn.qkv",
+                "image_encoder.blocks.7.attn.qkv",
+                "image_encoder.blocks.8.attn.qkv",
+                "image_encoder.blocks.9.attn.qkv",
+                "image_encoder.blocks.10.attn.qkv",
+                "image_encoder.blocks.11.attn.qkv",
+                # Mask Decoder
+                "mask_decoder.transformer.layers.0.self_attn.q_proj",
+                # "mask_decoder.transformer.layers.0.self_attn.k_proj",
+                "mask_decoder.transformer.layers.0.self_attn.v_proj",
+                'mask_decoder.transformer.layers.0.cross_attn_token_to_image.q_proj',
+                # 'mask_decoder.transformer.layers.0.cross_attn_token_to_image.k_proj',
+                'mask_decoder.transformer.layers.0.cross_attn_token_to_image.v_proj',
+                'mask_decoder.transformer.layers.0.cross_attn_image_to_token.q_proj',
+                # 'mask_decoder.transformer.layers.0.cross_attn_image_to_token.k_proj',
+                'mask_decoder.transformer.layers.0.cross_attn_image_to_token.v_proj',
+                'mask_decoder.transformer.layers.1.self_attn.q_proj',
+                # 'mask_decoder.transformer.layers.1.self_attn.k_proj',
+                'mask_decoder.transformer.layers.1.self_attn.v_proj',
+                'mask_decoder.transformer.layers.1.cross_attn_token_to_image.q_proj',
+                # 'mask_decoder.transformer.layers.1.cross_attn_token_to_image.k_proj',
+                'mask_decoder.transformer.layers.1.cross_attn_token_to_image.v_proj',
+                'mask_decoder.transformer.layers.1.cross_attn_image_to_token.q_proj',
+                # 'mask_decoder.transformer.layers.1.cross_attn_image_to_token.k_proj',
+                'mask_decoder.transformer.layers.1.cross_attn_image_to_token.v_proj',
+                'mask_decoder.transformer.final_attn_token_to_image.q_proj',
+                # 'mask_decoder.transformer.final_attn_token_to_image.k_proj',
+                'mask_decoder.transformer.final_attn_token_to_image.v_proj'
+            ],
+            quanta_dropout=0.0,
+            bias="none",
+            merge_weights=True
+        )
+        sam_fine_tune = QuanTAModel(quanta_config,sam)
+        sam_fine_tune.load_state_dict(torch.load(args.dir_checkpoint + '/checkpoint_best.pth'), strict = False)
+        # Turn off the gradients
+        for param in sam_fine_tune.parameters():
+            param.requires_grad = False
+        
         total, trainable = count_parameters(sam_fine_tune)
+        
         print(f"Total parameters: {total:,}")
         print(f"Trainable parameters: {trainable:,}")
         print(f"Frozen parameters: {total - trainable:,}")
